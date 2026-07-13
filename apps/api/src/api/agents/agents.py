@@ -56,7 +56,7 @@ class FinalResponse(BaseModel):
 
 class IntentRouterResponse(BaseModel):
     question_relevant: bool
-    answer: str = Field(description="An answer to the question if the users question is not relevant to the products.")
+    answer: str = Field(description="An answer to the question if the users question is not relevant to music products.")
 
 
 @traceable(
