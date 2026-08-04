@@ -251,12 +251,26 @@ def get_formatted_reviews_context(query: str, parent_asins: list[str], top_k: in
 
     qdrant_client = QdrantClient(url="http://localhost:6333")
 
-    retrieved_context = retrieve_prefiltered_reviews_data(
-        query,
-        parent_asins,
-        qdrant_client,
-        top_k
-    )
+    collection_names = {
+        collection.name
+        for collection in qdrant_client.get_collections().collections
+    }
+    if "Amazon-reviews-collection-01" not in collection_names:
+        return (
+            "Reviews collection Amazon-reviews-collection-01 is not available locally. "
+            "Run notebooks/week_4/02-Multiple-Tools.ipynb to create it."
+        )
+
+    try:
+        retrieved_context = retrieve_prefiltered_reviews_data(
+            query,
+            parent_asins,
+            qdrant_client,
+            top_k
+        )
+    except Exception as exc:
+        return f"Could not retrieve reviews: {exc}"
+
     formatted_context = process_reviews_context(retrieved_context)
 
     return formatted_context
@@ -298,7 +312,7 @@ def add_to_shopping_cart(items: list[dict], user_id: str, cart_id: str) -> str:
             qdrant_client = QdrantClient(url="http://localhost:6333")
 
             dummy_vector = np.zeros(1536).tolist()
-            payload = qdrant_client.query_points(
+            result = qdrant_client.query_points(
                 collection_name="Amazon-items-collection-01-hybrid-search",
                 prefetch=[
                     Prefetch(
@@ -317,7 +331,29 @@ def add_to_shopping_cart(items: list[dict], user_id: str, cart_id: str) -> str:
                 ],
                 query=FusionQuery(fusion="rrf"),
                 limit=1,
-            ).points[0].payload
+            )
+
+            if result.points:
+                payload = result.points[0].payload
+            else:
+                scroll_result, _ = qdrant_client.scroll(
+                    collection_name="Amazon-items-collection-01-hybrid-search",
+                    scroll_filter=Filter(
+                        must=[
+                            FieldCondition(
+                                key="parent_asin",
+                                match=MatchValue(value=product_id)
+                            )
+                        ]
+                    ),
+                    limit=1,
+                )
+                if not scroll_result:
+                    raise ValueError(
+                        f"Product {product_id} not found in Qdrant. "
+                        "Pick a parent_asin from Amazon-items-collection-01-hybrid-search."
+                    )
+                payload = scroll_result[0].payload
 
             product_image_url = payload.get("image")
             price = payload.get("price")
