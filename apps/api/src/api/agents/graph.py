@@ -2,7 +2,23 @@ from pydantic import BaseModel, Field
 from typing import Annotated, List, Any
 from operator import add
 from api.agents.agents import RAGUsedContext, product_qna_agent, shopping_cart_agent, warehouse_manager_agent, coordinator_agent
-from api.agents.tools import get_formatted_item_context, get_formatted_reviews_context, get_shopping_cart, get_shopping_cart_for_sse, remove_from_cart, add_to_shopping_cart, check_warehouse_availability, reserve_warehouse_items
+from api.agents.tools import (
+    get_formatted_item_context, 
+    get_formatted_reviews_context, 
+    get_shopping_cart, 
+    get_shopping_cart_for_sse, 
+    remove_from_cart, 
+    add_to_shopping_cart, 
+    check_warehouse_availability, 
+    reserve_warehouse_items
+)
+from api.agents.guardrails import redact_product_id
+from api.agents.agents import (
+    MAX_ITERATIONS_PRODUCT_QNA,
+    MAX_ITERATIONS_SHOPPING_CART, 
+    MAX_ITERATIONS_WAREHOUSE_MANAGER, 
+    MAX_ITERATIONS_COORDINATOR
+)
 from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
@@ -84,7 +100,7 @@ def product_qna_agent_tool_router(state) -> str:
 
     if state.product_qna_agent.final_answer:
         return "end"
-    elif state.product_qna_agent.iteration > 5:
+    elif state.product_qna_agent.iteration > MAX_ITERATIONS_PRODUCT_QNA:
         return "end"
     elif len(state.messages[-1].tool_calls) > 0:
         return "tools"
@@ -102,7 +118,7 @@ def shopping_cart_agent_tool_router(state) -> str:
 
     if state.shopping_cart_agent.final_answer:
         return "end"
-    elif state.shopping_cart_agent.iteration > 4:
+    elif state.shopping_cart_agent.iteration > MAX_ITERATIONS_SHOPPING_CART:
         return "end"
     elif len(state.shopping_cart_agent.messages[-1].tool_calls) > 0:
         if add_to_cart_tool_call:
@@ -117,7 +133,7 @@ def warehouse_manager_agent_tool_router(state) -> str:
 
     if state.warehouse_manager_agent.final_answer:
         return "end"
-    elif state.warehouse_manager_agent.iteration > 4:
+    elif state.warehouse_manager_agent.iteration > MAX_ITERATIONS_WAREHOUSE_MANAGER:
         return "end"
     elif len(state.warehouse_manager_agent.messages[-1].tool_calls) > 0:
         return "tools"
@@ -129,7 +145,7 @@ def coordinator_agent_edge(state) -> str:
 
     if state.coordinator_agent.final_answer:
         return "end"
-    elif state.coordinator_agent.iteration > 6:
+    elif state.coordinator_agent.iteration > MAX_ITERATIONS_COORDINATOR:
         return "end"
     elif state.coordinator_agent.next_agent == "product_qna_agent":
         return "product_qna_agent"
@@ -190,6 +206,8 @@ workflow.add_node("coordinator_agent", coordinator_agent)
 
 workflow.add_node("hitl_add_to_cart", hitl_add_to_cart)
 
+workflow.add_node("redact_product_id", redact_product_id)
+
 workflow.add_edge(START, "coordinator_agent")
 
 workflow.add_conditional_edges(
@@ -199,7 +217,7 @@ workflow.add_conditional_edges(
         "product_qna_agent": "product_qna_agent",
         "shopping_cart_agent": "shopping_cart_agent",
         "warehouse_manager_agent": "warehouse_manager_agent",
-        "end": END
+        "end": "redact_product_id"
     }
 )
 
@@ -234,6 +252,7 @@ workflow.add_conditional_edges(
 workflow.add_edge("product_qna_agent_tool_node", "product_qna_agent")
 workflow.add_edge("shopping_cart_agent_tool_node", "shopping_cart_agent")
 workflow.add_edge("warehouse_manager_agent_tool_node", "warehouse_manager_agent")
+workflow.add_edge("redact_product_id", END)
 
 
 ### Agent Execution

@@ -211,3 +211,4 @@ __marimo__/
 qdrant_data/
 data/
 postgres_data/
+postgres_data_litellm/
