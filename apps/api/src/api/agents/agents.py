@@ -7,6 +7,7 @@ from langchain_core.messages import SystemMessage, convert_to_openai_messages, A
 from langchain_openai import ChatOpenAI
 
 from api.agents.utils.prompt_management import prompt_template_config
+from api.agents.utils.utils import postprocess_response
 from api.agents.tools import get_formatted_item_context, get_formatted_reviews_context, get_shopping_cart, remove_from_cart, add_to_shopping_cart, check_warehouse_availability, reserve_warehouse_items
 from typing import List
 
@@ -33,13 +34,9 @@ class FinalAgentResponse(BaseModel):
 
 ### Coordinator Agent Response Model
 
-class Delegation(BaseModel):
-    agent: str = Field(description="The agent to delegate the task to.")
-    task: str = Field(description="The task to be performed by the agent.")
-
 class Plan(BaseModel):
     next_agent: str = Field(description="The next agent to invoke")
-    plan: List[Delegation] = Field(description="A list of delegations to agents with tasks to be performed in sequence.")
+    next_agent_task: str = Field(description="The task to be performed by the next agent")
 
 
 
@@ -76,34 +73,12 @@ def product_qna_agent(state) -> dict:
         ]
     )
 
-    current_run = get_current_run_tree()
-    if current_run:
-        current_run.metadata["usage_metadata"] = {
-            "input_tokens": response.usage_metadata["input_tokens"],
-            "output_tokens": response.usage_metadata["output_tokens"],
-            "total_tokens": response.usage_metadata["total_tokens"],
-        }
+    postprocessed_response = postprocess_response(response, "FinalQnAAgentResponse", "product_qna_agent")
 
-    final_answer = False
-    answer = ""
-    references = []
-
-    def sanitise_response(response):
-
-        for tool_call in response.tool_calls:
-            if tool_call.get("name") == "FinalQnAAgentResponse":
-                answer = tool_call.get("args").get("answer")
-
-        return AIMessage(content=answer)
-
-    if len(response.tool_calls) > 0:
-        for tool_call in response.tool_calls:
-            if tool_call.get("name") == "FinalQnAAgentResponse":
-                final_answer = True
-                answer = tool_call.get("args").get("answer")
-                references.extend(tool_call.get("args").get("references"))
-
-                response = sanitise_response(response)
+    final_answer = postprocessed_response.get("final_answer")
+    answer = postprocessed_response.get("answer")
+    references = postprocessed_response.get("references")
+    response = postprocessed_response.get("response")
 
     return {
         "messages": [response],
@@ -148,42 +123,23 @@ def shopping_cart_agent(state) -> dict:
     response = llm_with_tools.invoke(
         [
             SystemMessage(content=prompt),
-            *state.messages
+            AIMessage(content=state.coordinator_agent.next_agent_task),
+            *state.shopping_cart_agent.messages
         ]
     )
 
-    current_run = get_current_run_tree()
-    if current_run:
-        current_run.metadata["usage_metadata"] = {
-            "input_tokens": response.usage_metadata["input_tokens"],
-            "output_tokens": response.usage_metadata["output_tokens"],
-            "total_tokens": response.usage_metadata["total_tokens"],
-        }
+    postprocessed_response = postprocess_response(response, "FinalAgentResponse", "shopping_cart_agent")
 
-    final_answer = False
-    answer = ""
-
-    def sanitise_response(response):
-
-        for tool_call in response.tool_calls:
-            if tool_call.get("name") == "FinalAgentResponse":
-                answer = tool_call.get("args").get("answer")
-
-        return AIMessage(content=answer)
-
-    if len(response.tool_calls) > 0:
-        for tool_call in response.tool_calls:
-            if tool_call.get("name") == "FinalAgentResponse":
-                final_answer = True
-                answer = tool_call.get("args").get("answer")
-
-                response = sanitise_response(response)
+    final_answer = postprocessed_response.get("final_answer")
+    answer = postprocessed_response.get("answer")
+    response = postprocessed_response.get("response")
 
     return {
-        "messages": [response],
+        "messages": [response] if final_answer else [],
         "shopping_cart_agent": {
             "iteration": state.shopping_cart_agent.iteration + 1,
-            "final_answer": final_answer
+            "final_answer": final_answer,
+            "messages": [response]
         },
         "answer": answer
     }
@@ -218,42 +174,23 @@ def warehouse_manager_agent(state) -> dict:
     response = llm_with_tools.invoke(
         [
             SystemMessage(content=prompt),
-            *state.messages
+            AIMessage(content=state.coordinator_agent.next_agent_task),
+            *state.warehouse_manager_agent.messages
         ]
     )
 
-    current_run = get_current_run_tree()
-    if current_run:
-        current_run.metadata["usage_metadata"] = {
-            "input_tokens": response.usage_metadata["input_tokens"],
-            "output_tokens": response.usage_metadata["output_tokens"],
-            "total_tokens": response.usage_metadata["total_tokens"],
-        }
+    postprocessed_response = postprocess_response(response, "FinalAgentResponse", "warehouse_manager_agent")
 
-    final_answer = False
-    answer = ""
-
-    def sanitise_response(response):
-
-        for tool_call in response.tool_calls:
-            if tool_call.get("name") == "FinalAgentResponse":
-                answer = tool_call.get("args").get("answer")
-
-        return AIMessage(content=answer)
-
-    if len(response.tool_calls) > 0:
-        for tool_call in response.tool_calls:
-            if tool_call.get("name") == "FinalAgentResponse":
-                final_answer = True
-                answer = tool_call.get("args").get("answer")
-
-                response = sanitise_response(response)
+    final_answer = postprocessed_response.get("final_answer")
+    answer = postprocessed_response.get("answer")
+    response = postprocessed_response.get("response")
 
     return {
-        "messages": [response],
+        "messages": [response] if final_answer else [],
         "warehouse_manager_agent": {
             "iteration": state.warehouse_manager_agent.iteration + 1,
-            "final_answer": final_answer
+            "final_answer": final_answer,
+            "messages": [response]
         },
         "answer": answer
     }
@@ -277,7 +214,7 @@ def coordinator_agent(state) -> dict:
 
     llm = ChatOpenAI(
         model="gpt-5.4-mini",
-        reasoning_effort="low",
+        reasoning_effort="medium",
         use_responses_api=True
     )
     llm_with_tools = llm.bind_tools(
@@ -294,48 +231,34 @@ def coordinator_agent(state) -> dict:
 
     current_run = get_current_run_tree()
     if current_run:
-        current_run.metadata["usage_metadata"] = {
-            "input_tokens": response.usage_metadata["input_tokens"],
-            "output_tokens": response.usage_metadata["output_tokens"],
-            "total_tokens": response.usage_metadata["total_tokens"],
-        }
         trace_id = str(current_run.trace_id)
     else:
         trace_id = ""
 
     final_answer = False
     answer = ""
-    plan = []
     next_agent = ""
-
-    def sanitise_response(response):
-
-        for tool_call in response.tool_calls:
-            if tool_call.get("name") == "FinalAgentResponse":
-                answer = tool_call.get("args").get("answer")
-
-        return AIMessage(content=answer)
+    next_agent_task = ""
 
     if len(response.tool_calls) > 0:
         if response.tool_calls[0].get("name") == "Plan":
-            plan = response.tool_calls[0].get("args").get("plan")
             next_agent = response.tool_calls[0].get("args").get("next_agent")
-            response = None
+            next_agent_task = response.tool_calls[0].get("args").get("next_agent_task")
+            response = AIMessage(content=f"[coordinator_agent decision] Next agent: {next_agent}. Next agent task: {next_agent_task}")
         else:
-            for tool_call in response.tool_calls:
-                if tool_call.get("name") == "FinalAgentResponse":
-                    final_answer = True
-                    answer = tool_call.get("args").get("answer")
+            postprocessed_response = postprocess_response(response, "FinalAgentResponse")
 
-                    response = sanitise_response(response)
+            final_answer = postprocessed_response.get("final_answer")
+            answer = postprocessed_response.get("answer")
+            response = postprocessed_response.get("response")
 
     return {
         "messages": [response] if response else [],
         "coordinator_agent": {
             "iteration": state.coordinator_agent.iteration + 1,
             "final_answer": final_answer,
-            "plan": plan,
-            "next_agent": next_agent
+            "next_agent": next_agent,
+            "next_agent_task": next_agent_task
         },
         "answer": answer,
         "trace_id": trace_id

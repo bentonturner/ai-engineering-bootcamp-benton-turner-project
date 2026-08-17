@@ -12,6 +12,11 @@ class RAGUsedContext(BaseModel):
     price: Optional[float] = None
     description: str
 
+class HitlRequest(BaseModel):
+    thread_id: str
+    approved: bool
+    feedback: str
+
 class AgentResponse(BaseModel):
     answer: str
     used_context: list[RAGUsedContext]
